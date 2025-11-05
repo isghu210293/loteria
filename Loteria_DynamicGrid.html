@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <script src="js/filesaver.js" type="text/javascript"></script>
+  <!-- <script src="js/html2canvas.js" type="text/javascript"></script>   -->
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <title>Loteria — CSS Grid</title>
+  <style>
+    :root{ --w:600px; --h:620px; --cols:10; --rows:12; }
+    body{font-family:Arial;margin:20px;}
+    .stage{
+      width:var(--w);
+      height:var(--h);
+      border:3px solid #000;
+      display:grid;
+      grid-template-columns: repeat(var(--cols), 1fr);
+      grid-auto-rows: calc(var(--h) / var(--rows));
+      box-sizing:border-box;
+      background:#fff;
+    }
+    .cell{
+      box-sizing:border-box;
+      border:3px solid #000;
+      background-repeat:no-repeat;
+      background-size:100% 100%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:12px;
+      color:#000;
+    }
+    .controls{margin:12px 0;}
+    button{padding:6px 12px;}
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <button id="renderBtn">Render from CSV</button>
+    <select id="csvSelect">
+      <option value="prueba2.csv">prueba2.csv</option>
+      <option value="prueba3.csv">prueba3.csv</option>
+      <option value="prueba5.csv">prueba5.csv</option>
+      <option value="prueba_xls.csv">prueba_xls.csv</option>
+      <option value="isaac_copy.csv">isaac_copy.csv</option>
+    </select>
+
+    <button id="downloadBtn">Save PNG</button>
+  </div>
+
+  <div id="stage" class="stage" role="grid" aria-label="loteria grid"></div>
+
+  <div id="img-out" style="margin-top:12px;"></div>
+
+<script>
+(function(){
+  const stage = document.getElementById('stage');
+  const btn = document.getElementById('renderBtn');
+  const sel = document.getElementById('csvSelect');
+  const downloadBtn = document.getElementById('downloadBtn');
+
+  function clearStage(){ stage.innerHTML = ''; }
+
+  // main renderer: parse CSV text -> draw grid items
+  function renderFromCsvText(text){
+    clearStage();
+    const lines = text.split(/\r\n|\n/).filter(l=>l.trim()!=="");
+    const numCols = 10;
+    const rows = lines.map(line=>{
+      const parts = line.split(',').map(c => (c||"").toString().trim());
+      for(let i=parts.length;i<numCols;i++) parts.push("");
+      return parts;
+    });
+    const totalRows = rows.length;
+
+    // state per column for current top element
+    const topEl = new Array(numCols).fill(null);
+    const topVal = new Array(numCols).fill("");
+    const topCount = new Array(numCols).fill(0);
+    const topStart = new Array(numCols).fill(0);
+    const skip = new Array(numCols).fill(0);
+
+    for(let r=0;r<totalRows;r++){
+      for(let c=0;c<numCols;c++){
+        if(skip[c] > 0){ skip[c]--; continue; }
+
+        const val = rows[r][c];
+
+        // blank -> try to continue previous top (only up to max 2)
+        if(val === "" || val === "0"){
+          if(topVal[c] && topVal[c] !== "" && topCount[c] < 2){
+            // extend previous top element span to cover this row
+            topCount[c] = Math.min(2, topCount[c] + 1);
+            topEl[c].style.gridRow = topStart[c] + " / span " + topCount[c];
+            // after extending, the next visual row (r+1) is covered -> mark skip
+            if(topCount[c] === 2) skip[c] = 1;
+            continue;
+          } else {
+            // create a visible empty cell (single row)
+            const el = document.createElement('div');
+            el.className = 'cell';
+            el.style.gridColumn = (c+1);
+            el.style.gridRow = (r+1) + " / span 1";
+            stage.appendChild(el);
+            topEl[c] = el; topVal[c] = ""; topCount[c] = 1; topStart[c] = r+1;
+            continue;
+          }
+        }
+
+        // non-empty value
+        if(topVal[c] === val && topCount[c] < 2 && topEl[c]){
+          // same as top and top not maxed -> extend top
+          topCount[c] = Math.min(2, topCount[c] + 1);
+          topEl[c].style.gridRow = topStart[c] + " / span " + topCount[c];
+          if(topCount[c] === 2) skip[c] = 1;
+          continue;
+        }
+
+        // otherwise create new element for this value
+        // decide if it should span 2: if next row has same value OR is blank/0 (continuation)
+        let span = 1;
+        if(r+1 < totalRows){
+          const nxt = rows[r+1][c];
+          if(nxt === val || nxt === "" || nxt === "0") span = 2;
+        }
+
+        const el = document.createElement('div');
+        el.className = 'cell';
+        el.style.gridColumn = (c+1);
+        el.style.gridRow = (r+1) + " / span " + span;
+        if(val !== "" && val !== "0"){
+          // set background image path; adjust path if needed
+          el.style.backgroundImage = "url('imagenes/" + encodeURIComponent(val) + ".png')";
+        }
+        stage.appendChild(el);
+
+        topEl[c] = el;
+        topVal[c] = val;
+        topCount[c] = span;
+        topStart[c] = r+1;
+        if(span === 2) skip[c] = 1;
+      }
+    }
+  }
+
+  async function loadAndRender(file){
+    try{
+      const res = await fetch(file);
+      if(!res.ok) throw new Error('Failed to fetch ' + file);
+      const text = await res.text();
+      renderFromCsvText(text);
+    }catch(e){
+      console.error(e);
+      alert('Error loading CSV: ' + e.message);
+    }
+  }
+
+  btn.addEventListener('click', ()=> loadAndRender(sel.value));
+
+  // auto render first CSV on load
+  loadAndRender(sel.value);
+
+// DOWNLOAD -> render preview + create a download link below it
+  downloadBtn.addEventListener('click', function(){
+    // render canvas preview of the stage
+    html2canvas(stage, {useCORS: true, backgroundColor: '#ffffff'}).then(function(canvas){
+      lastCanvas = canvas;
+      const out = document.getElementById('img-out');
+      out.innerHTML = '';                     // clear previous preview
+      canvas.style.maxWidth = '100%';
+      canvas.style.height = 'auto';
+      out.appendChild(canvas);
+
+      // create download anchor from canvas dataURL
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/png');
+      a.download = 'Loteria.png';
+      a.textContent = 'Download PNG';
+      a.style.display = 'inline-block';
+      a.style.marginTop = '8px';
+      a.style.padding = '8px 12px';
+      a.style.background = '#4CAF50';
+      a.style.color = '#fff';
+      a.style.textDecoration = 'none';
+      a.style.borderRadius = '3px';
+      out.appendChild(document.createElement('br'));
+      out.appendChild(a);
+
+      // optional: also offer FileSaver.js blob download if available
+      if (window.saveAs && canvas.toBlob) {
+        const b = document.createElement('button');
+        b.textContent = 'Save (FileSaver)';
+        b.style.marginLeft = '8px';
+        b.addEventListener('click', function(){
+          canvas.toBlob(function(blob){
+            saveAs(blob, 'Loteria.png');
+          }, 'image/png');
+        });
+        out.appendChild(b);
+      }
+    }).catch(function(err){
+      console.error('html2canvas error', err);
+      alert('Error generating image: ' + (err && err.message || err));
+    });
+  });
+
+})();
+</script>
+</body>
+</html>
